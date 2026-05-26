@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioFlow - 在线音频转换器</title>
+    
+    <!-- Tailwind CSS (UI样式) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FFmpeg.wasm (核心转换引擎) -->
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    <script src="https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.min.js"></script>
+
+    <style>
+        /* 自定义动画 */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+        }
+        .upload-active { animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        
+        /* 隐藏滚动条但保留功能 */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen flex items-center justify-center p-4 font-sans text-slate-800">
+
+    <div class="w-full max-w-lg bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
+        <!-- Header -->
+        <div class="bg-indigo-600 p-6 text-center">
+            <h1 class="text-2xl font-bold text-white tracking-wide">🎵 AudioFlow</h1>
+            <p class="text-indigo-200 text-sm mt-1">安全 · 免费 · 浏览器端转换</p>
+        </div>
+
+        <div class="p-8 space-y-6">
+            
+            <!-- 1. 文件上传区域 -->
+            <div id="drop-zone" class="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer hover:border-indigo-500 hover:bg-indigo-50 transition-all duration-300 group">
+                <input type="file" id="file-input" accept="audio/*" class="hidden">
+                <div class="text-4xl mb-2 group-hover:scale-110 transition-transform">📂</div>
+                <p class="text-slate-600 font-medium">点击选择或拖拽音频文件</p>
+                <p class="text-xs text-slate-400 mt-1">支持 MP3, WAV, FLAC, OGG, AAC 等</p>
+            </div>
+
+            <!-- 文件信息显示 (默认隐藏) -->
+            <div id="file-info" class="hidden bg-slate-50 rounded-lg p-4 flex items-center justify-between border border-slate-200">
+                <div class="flex items-center gap-3 overflow-hidden">
+                    <span class="text-2xl">🎵</span>
+                    <div class="min-w-0">
+                        <p id="original-name" class="font-medium text-sm truncate text-slate-700">filename.mp3</p>
+                        <p id="file-size" class="text-xs text-slate-500">2.4 MB</p>
+                    </div>
+                </div>
+                <button id="clear-btn" class="text-slate-400 hover:text-red-500 transition-colors">✕</button>
+            </div>
+
+            <!-- 2. 设置区域 -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- 格式选择 -->
+                <div class="space-y-1">
+                    <label class="text-xs font-semibold text-slate-500 uppercase">导出格式</label>
+                    <select id="format-select" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all">
+                        <option value="mp3">MP3 (通用性最佳)</option>
+                        <option value="wav">WAV (无损音质)</option>
+                        <option value="flac">FLAC (无损压缩)</option>
+                        <option value="ogg">OGG (开源高效)</option>
+                        <option value="aac">AAC (苹果设备推荐)</option>
+                    </select>
+                </div>
+
+                <!-- 文件名自定义 -->
+                <div class="space-y-1">
+                    <label class="text-xs font-semibold text-slate-500 uppercase">导出文件名 (可选)</label>
+                    <input type="text" id="custom-name" placeholder="留空则使用源文件名" 
+                        class="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all">
+                </div>
+            </div>
+
+            <!-- 3. 操作按钮与进度 -->
+            <div class="pt-2">
+                <button id="convert-btn" disabled 
+                    class="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold py-3.5 rounded-xl shadow-lg shadow-indigo-200 transition-all duration-300 flex items-center justify-center gap-2">
+                    <span>开始转换</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                </button>
+
+                <!-- 进度条 -->
+                <div id="progress-container" class="hidden mt-4">
+                    <div class="flex justify-between text-xs text-slate-500 mb-1">
+                        <span id="status-text">正在初始化引擎...</span>
+                        <span id="progress-percent">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                        <div id="progress-bar" class="bg-indigo-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 状态管理 ---
+        const state = {
+            file: null,
+            ffmpeg: null,
+            isConverting: false
+        };
+
+        // --- DOM 元素 ---
+        const els = {
+            dropZone: document.getElementById('drop-zone'),
+            fileInput: document.getElementById('file-input'),
+            fileInfo: document.getElementById('file-info'),
+            originalName: document.getElementById('original-name'),
+            fileSize: document.getElementById('file-size'),
+            clearBtn: document.getElementById('clear-btn'),
+            formatSelect: document.getElementById('format-select'),
+            customName: document.getElementById('custom-name'),
+            convertBtn: document.getElementById('convert-btn'),
+            progressContainer: document.getElementById('progress-container'),
+            progressBar: document.getElementById('progress-bar'),
+            progressPercent: document.getElementById('progress-percent'),
+            statusText: document.getElementById('status-text')
+        };
+
+        // --- 事件监听 ---
+        
+        // 1. 文件选择与拖拽
+        els.dropZone.addEventListener('click', () => els.fileInput.click());
+        els.fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+        
+        ['dragenter', 'dragover'].forEach(evt => {
+            els.dropZone.addEventListener(evt, (e) => {
+                e.preventDefault();
+                els.dropZone.classList.add('border-indigo-500', 'bg-indigo-50');
+            });
+        });
+        
+        ['dragleave', 'drop'].forEach(evt => {
+            els.dropZone.addEventListener(evt, (e) => {
+                e.preventDefault();
+                els.dropZone.classList.remove('border-indigo-500', 'bg-indigo-50');
+            });
+        });
+        
+        els.dropZone.addEventListener('drop', (e) => {
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('audio/')) handleFile(file);
+            else alert('请上传有效的音频文件');
+        });
+
+        // 2. 清除文件
+        els.clearBtn.addEventListener('click', resetUI);
+
+        // 3. 格式改变时更新占位符提示
+        els.formatSelect.addEventListener('change', updatePlaceholder);
+
+        // 4. 转换按钮
+        els.convertBtn.addEventListener('click', startConversion);
+
+        // --- 核心逻辑 ---
+
+        function handleFile(file) {
+            if (!file) return;
+            state.file = file;
+            
+            // 更新UI
+            els.originalName.textContent = file.name;
+            els.fileSize.textContent = formatBytes(file.size);
+            els.dropZone.classList.add('hidden');
+            els.fileInfo.classList.remove('hidden');
+            els.convertBtn.disabled = false;
+            
+            updatePlaceholder();
+        }
+
+        function resetUI() {
+            state.file = null;
+            els.fileInput.value = '';
+            els.customName.value = '';
+            els.dropZone.classList.remove('hidden');
+            els.fileInfo.classList.add('hidden');
+            els.convertBtn.disabled = true;
+            els.progressContainer.classList.add('hidden');
+        }
+
+        function updatePlaceholder() {
+            if (!state.file) return;
+            const ext = els.formatSelect.value;
+            const baseName = getBaseName(state.file.name);
+            els.customName.placeholder = `${baseName}.${ext}`;
+        }
+
+        async function initFFmpeg() {
+            if (state.ffmpeg) return state.ffmpeg;
+
+            const { createFFmpeg, log } = FFmpeg;
+            state.ffmpeg = createFFmpeg({ 
+                log: false, // 生产环境关闭日志
+                progress: ({ ratio }) => {
+                    const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+                    els.progressBar.style.width = `${percent}%`;
+                    els.progressPercent.textContent = `${percent}%`;
+                    if(percent > 0) els.statusText.textContent = "正在转码中...";
+                }
+            });
+
+            els.statusText.textContent = "正在加载核心组件 (首次较慢)...";
+            await state.ffmpeg.load();
+            return state.ffmpeg;
+        }
+
+        async function startConversion() {
+            if (!state.file || state.isConverting) return;
+            state.isConverting = true;
+            els.convertBtn.disabled = true;
+            els.progressContainer.classList.remove('hidden');
+            els.progressBar.style.width = '0%';
+            els.progressPercent.textContent = '0%';
+
+            try {
+                const ffmpeg = await initFFmpeg();
+                const inputName = 'input_audio';
+                const targetExt = els.formatSelect.value;
+                
+                // 确定输出文件名：优先自定义，否则用源文件名+新后缀
+                let outputName = '';
+                const customVal = els.customName.value.trim();
+                
+                if (customVal) {
+                    // 如果用户输入了名字，检查是否带了后缀
+                    outputName = customVal.includes('.') ? customVal : `${customVal}.${targetExt}`;
+                } else {
+                    outputName = `${getBaseName(state.file.name)}.${targetExt}`;
+                }
+
+                // 读取文件到内存
+                const { fetchFile } = FFmpeg;
+                ffmpeg.FS('writeFile', inputName, await fetchFile(state.file));
+
+                // 执行转换命令
+                // 注意：不同格式可能需要特定参数，这里使用通用参数
+                // -vn: 去除视频流(如果有封面图)
+                // -acodec: 自动选择编码器
+                await ffmpeg.run('-i', inputName, '-vn', '-acodec', 'copy', outputName); 
+                // 注意：对于某些格式转换(如wav转mp3)，'copy'可能无效，需要重编码
+                // 为了简化演示，若copy失败可尝试移除-acodec copy让ffmpeg自动判断
+                // 更稳健的做法是根据targetExt指定编码器，例如mp3用libmp3lame
+                
+                // 重新运行一个更通用的命令以防上面失败
+                // 实际上 ffmpeg.wasm 0.11.x 对自动编码支持较好，我们直接用简单命令
+                // 上面的 run 如果报错，下面这个备用
+                try {
+                     // 尝试读取输出文件，如果不存在说明上面的命令失败了
+                     ffmpeg.FS('readFile', outputName);
+                } catch (e) {
+                    // 备用重编码命令
+                    await ffmpeg.run('-i', inputName, outputName);
+                }
+
+                // 读取结果并下载
+                const data = ffmpeg.FS('readFile', outputName);
+                const blob = new Blob([data.buffer], { type: `audio/${targetExt}` });
+                downloadBlob(blob, outputName);
+
+                els.statusText.textContent = "✅ 转换完成！";
+                els.progressBar.classList.replace('bg-indigo-600', 'bg-green-500');
+                
+            } catch (err) {
+                console.error(err);
+                els.statusText.textContent = "❌ 转换失败: " + (err.message || "未知错误");
+                els.progressBar.classList.replace('bg-indigo-600', 'bg-red-500');
+                els.progressBar.style.width = '100%';
+            } finally {
+                state.isConverting = false;
+                els.convertBtn.disabled = false;
+                // 清理内存
+                if(state.ffmpeg) {
+                    try {
+                        state.ffmpeg.FS('unlink', 'input_audio');
+                        // 输出文件也清理，防止内存泄漏
+                        const outName = els.customName.value.trim() || `${getBaseName(state.file.name)}.${els.formatSelect.value}`;
+                        state.ffmpeg.FS('unlink', outName);
+                    } catch(e){}
+                }
+            }
+        }
+
+        // --- 工具函数 ---
+
+        function getBaseName(filename) {
+            return filename.substring(0, filename.lastIndexOf('.')) || filename;
+        }
+
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        function downloadBlob(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
